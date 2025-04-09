@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from time import sleep
 
@@ -6,12 +7,13 @@ import click
 import numpy as np
 import requests
 from astropy.coordinates import ICRS, AltAz, Angle, EarthLocation, SkyCoord
+from astropy.table import Table
 from astropy.time import Time
 
-DEFAULT_URL = "http://localhost:8090"
+DEFAULT_STELLARIUM_URL = "http://localhost:8090"
 CAMERA_CHOICES = ["LSSTCam", "ComCam", "LATISS"]
-DEFAULT_CONSDB_SERVER = "https://usdf-rsp.slac.stanford.edu/consdb"
-DEFAULT_CONSDB_TOKEN_PATH = "~/.lsst/consdb_token"
+DEFAULT_RSP_SERVER = "https://usdf-rsp.slac.stanford.edu"
+DEFAULT_RSP_TOKEN_PATH = "~/.lsst/rsp_token"
 DEFAULT_EFD_CLIENT = "usdf_efd"
 # Using Stellarium values for Cerro Pachón
 RUBIN_OBSERVATORY = EarthLocation(
@@ -19,6 +21,108 @@ RUBIN_OBSERVATORY = EarthLocation(
     lon=Angle("-70d44m11.99s"),
     height=2722 * u.m,
 )
+
+
+# Cribbing some items from https://github.com/lsst-sims/rubin_nights
+def get_access_token(tokenfile: str | None = None) -> str:
+    """Retrieve RSP access token.
+
+    Parameters
+    ----------
+    tokenfile : `str` or None
+        Path to token file.
+        Default None will fall back to environment variable,
+        ACCESS_TOKEN and then try lsst.rsp.get_access_token().
+
+    Returns
+    -------
+    token : `str`
+        Token value.
+    """
+    token = None
+    try:
+        # Try using lsst-rsp first
+        import lsst.rsp.get_access_token as rsp_get_access_token
+
+        token = rsp_get_access_token(tokenfile=tokenfile)
+    except ImportError:
+        # No lsst-rsp available
+        if tokenfile is not None:
+            tokenfile = Path(tokenfile).expanduser()
+            if tokenfile.exists():
+                with open(tokenfile, "r") as f:
+                    token = f.read().strip()
+        else:
+            # Try default token file
+            tokenfile = Path(DEFAULT_RSP_TOKEN_PATH).expanduser()
+            if tokenfile.exists():
+                with open(tokenfile, "r") as f:
+                    token = f.read().strip()
+        if token is None:
+            # Try using environment variable
+            token = os.environ.get("ACCESS_TOKEN")
+
+    if token is None:
+        print("No RSP token available.")
+        token = ""
+    return token
+
+
+class ConsDB:
+    """Class to query ConsDB.
+
+    Uses the ConsDbClient if available, otherwise falls back to
+    using the REST API.
+
+    Parameters
+    ----------
+    server : str
+        ConsDB server URL.
+    token : str
+        RSP access token.
+    """
+    def __init__(self, server, token):
+        self.server = server
+        self.token = token
+        try:
+            from lsst.summit.utils import ConsDbClient
+            server = server.replace("https://", f"https://user:{token}@")+"/consdb"
+            self.client = ConsDbClient(server)
+        except ImportError:
+            self.client = None
+        self.client = None
+
+    def query(self, query):
+        """Query ConsDB.
+
+        Parameters
+        ----------
+        query : str
+            SQL query to execute.
+
+        Returns
+        -------
+        astropy.table.Table
+            Table with results of query.
+        """
+        if self.client is not None:
+            return self.client.query(query)
+        else:
+            import httpx
+            auth = "user", self.token
+            params = {
+                "query": query,
+            }
+            response = httpx.post(
+                self.server+"/consdb/query",
+                auth=auth,
+                json=params
+            )
+            columns = response.json()['columns']
+            data = response.json()['data']
+            table = Table(names=columns, data=np.array(data))
+            return table
+
 
 
 def parallactic_angle(coord, time):
@@ -199,8 +303,8 @@ def print_state(api_url):
 @click.group()
 @click.option(
     "--url",
-    default=DEFAULT_URL,
-    help=f"URL of Stellarium API. [default: {DEFAULT_URL}]",
+    default=DEFAULT_STELLARIUM_URL,
+    help=f"URL of Stellarium API. [default: {DEFAULT_STELLARIUM_URL}]",
 )
 @click.pass_context
 def cli(ctx, url):
@@ -454,22 +558,16 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
     default=None,
 )
 @click.option(
-    "--consdb-token",
+    "--rsp-token",
     type=str,
-    help=f"Path to ConsDB token file. [default: {DEFAULT_CONSDB_TOKEN_PATH}]",
-    default=DEFAULT_CONSDB_TOKEN_PATH,
+    help=f"Path to RSP token file. [default: {DEFAULT_RSP_TOKEN_PATH}]",
+    default=DEFAULT_RSP_TOKEN_PATH,
 )
 @click.option(
-    "--consdb-server",
+    "--rsp-server",
     type=str,
-    help=f"ConsDB server URL. [default: {DEFAULT_CONSDB_SERVER}]",
-    default=DEFAULT_CONSDB_SERVER,
-)
-@click.option(
-    "--database",
-    type=str,
-    help="ConsDB database name. [default: depends on camera]",
-    default=None,
+    help=f"RSP server URL. [default: {DEFAULT_RSP_SERVER}]",
+    default=DEFAULT_RSP_SERVER,
 )
 @click.option(
     "--no-follow",
@@ -477,7 +575,7 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
     help="Do not follow the slew with a Stellarium view change.",
 )
 @click.pass_context
-def visit(ctx, visit, camera, consdb_token, consdb_server, database, no_follow):
+def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow):
     """Slew to match given visit ID.
 
     VISIT is the visit ID to slew to.
@@ -502,15 +600,10 @@ def visit(ctx, visit, camera, consdb_token, consdb_server, database, no_follow):
 
         python tvs.py visit 2025040300825 --camera LATISS --no-follow
     """
-    from lsst.summit.utils import ConsDbClient
-
     api_url = ctx.obj["URL"]
 
-    path = Path(consdb_token).expanduser()
-    with open(path, "r") as f:
-        token = f.read()
-    consdb_server = consdb_server.replace("https://", f"https://user:{token}@")
-    consdb = ConsDbClient(consdb_server)
+    token = get_access_token(rsp_token)
+    consdb = ConsDB(rsp_server, token)
 
     # Override camera by date if possible:
     if camera is None:
@@ -527,13 +620,14 @@ def visit(ctx, visit, camera, consdb_token, consdb_server, database, no_follow):
             print("Inferring camera is LSSTCam")
             camera = "LSSTCam"
 
-    if database is None:
-        if camera == "ComCam":
-            database = "cdb_lsstcomcam"
-        elif camera == "LSSTCam":
-            database = "cdb_lsstcam"
-        elif camera == "LATISS":
-            database = "cdb_latiss"
+    if camera == "ComCam":
+        database = "cdb_lsstcomcam"
+    elif camera == "LSSTCam":
+        database = "cdb_lsstcam"
+    elif camera == "LATISS":
+        database = "cdb_latiss"
+    else:
+        raise ValueError(f"Unknown camera: {camera}")
 
     data = consdb.query(f"select * from {database}.visit1 where visit_id = {visit}")[0]
 
@@ -566,22 +660,16 @@ def visit(ctx, visit, camera, consdb_token, consdb_server, database, no_follow):
     default=None,
 )
 @click.option(
-    "--consdb-token",
+    "--rsp-token",
     type=str,
-    help=f"Path to ConsDB token file. [default: {DEFAULT_CONSDB_TOKEN_PATH}]",
-    default=DEFAULT_CONSDB_TOKEN_PATH,
+    help=f"Path to RSP token file. [default: {DEFAULT_RSP_TOKEN_PATH}]",
+    default=DEFAULT_RSP_TOKEN_PATH,
 )
 @click.option(
-    "--consdb-server",
+    "--rsp-server",
     type=str,
-    help=f"ConsDB server URL. [default: {DEFAULT_CONSDB_SERVER}]",
-    default=DEFAULT_CONSDB_SERVER,
-)
-@click.option(
-    "--database",
-    type=str,
-    help="ConsDB database name. [default: Depends on camera]",
-    default=None,
+    help=f"RSP server URL. [default: {DEFAULT_RSP_SERVER}]",
+    default=DEFAULT_RSP_SERVER,
 )
 @click.option(
     "--no-follow",
@@ -594,9 +682,8 @@ def replay(
     day_obs_begin,
     day_obs_end,
     camera,
-    consdb_token,
-    consdb_server,
-    database,
+    rsp_token,
+    rsp_server,
     no_follow,
 ):
     """Replay a range of days.
@@ -605,8 +692,6 @@ def replay(
     DAY_OBS_END is omitted, it is set equal to DAY_OBS_BEGIN.
 
     """
-    from lsst.summit.utils import ConsDbClient
-
     api_url = ctx.obj["URL"]
 
     if day_obs_end is None:
@@ -629,19 +714,17 @@ def replay(
             print("Inferring camera is LSSTCam")
             camera = "LSSTCam"
 
-    path = Path(consdb_token).expanduser()
-    with open(path, "r") as f:
-        token = f.read()
-    consdb_server = consdb_server.replace("https://", f"https://user:{token}@")
-    consdb = ConsDbClient(consdb_server)
+    token = get_access_token(rsp_token)
+    consdb = ConsDB(rsp_server, token)
 
-    if database is None:
-        if camera == "ComCam":
-            database = "cdb_lsstcomcam"
-        elif camera == "LSSTCam":
-            database = "cdb_lsstcam"
-        elif camera == "LATISS":
-            database = "cdb_latiss"
+    if camera == "ComCam":
+        database = "cdb_lsstcomcam"
+    elif camera == "LSSTCam":
+        database = "cdb_lsstcam"
+    elif camera == "LATISS":
+        database = "cdb_latiss"
+    else:
+        raise ValueError(f"Unknown camera: {camera}")
 
     visits = consdb.query(
         f"select * from {database}.visit1 where day_obs >= {day_obs_begin}"
