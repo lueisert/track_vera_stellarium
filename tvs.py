@@ -4,8 +4,8 @@ from time import sleep
 
 import astropy.units as u
 import click
+import httpx
 import numpy as np
-import requests
 from astropy.coordinates import ICRS, AltAz, Angle, EarthLocation, SkyCoord
 from astropy.table import Table
 from astropy.time import Time
@@ -81,12 +81,14 @@ class ConsDB:
     token : str
         RSP access token.
     """
+
     def __init__(self, server, token):
         self.server = server
         self.token = token
         try:
             from lsst.summit.utils import ConsDbClient
-            server = server.replace("https://", f"https://user:{token}@")+"/consdb"
+
+            server = server.replace("https://", f"https://user:{token}@") + "/consdb"
             self.client = ConsDbClient(server)
         except ImportError:
             self.client = None
@@ -108,21 +110,15 @@ class ConsDB:
         if self.client is not None:
             return self.client.query(query)
         else:
-            import httpx
             auth = "user", self.token
             params = {
                 "query": query,
             }
-            response = httpx.post(
-                self.server+"/consdb/query",
-                auth=auth,
-                json=params
-            )
-            columns = response.json()['columns']
-            data = response.json()['data']
+            response = httpx.post(self.server + "/consdb/query", auth=auth, json=params)
+            columns = response.json()["columns"]
+            data = response.json()["data"]
             table = Table(names=columns, data=np.array(data))
             return table
-
 
 
 def parallactic_angle(coord, time):
@@ -162,8 +158,8 @@ def set_camera(url, camera):
         Camera to set.
     """
     url = f"{url}/api/stelproperty/set"
-    requests.post(url, data={"id": "MosaicCamera.currentCamera", "value": camera})
-    requests.post(url, data={"id": "MosaicCamera.visible", "value": "True"})
+    httpx.post(url, data={"id": "MosaicCamera.currentCamera", "value": camera})
+    httpx.post(url, data={"id": "MosaicCamera.visible", "value": "True"})
 
 
 def slew_to(url, camera, ra, dec, rsp):
@@ -190,7 +186,7 @@ def slew_to(url, camera, ra, dec, rsp):
         {"id": "MosaicCamera.dec", "value": dec.deg},
         {"id": "MosaicCamera.rotation", "value": 90 + rsp.deg},
     ]:
-        requests.post(url, data=data)
+        httpx.post(url, data=data)
 
 
 def parse_angle(value, unit=u.deg):
@@ -246,10 +242,8 @@ def get_stellarium_attributes(url):
             rtp: astropy.coordinates.Angle
                 Rotator position (RotTelPos) of current camera.
     """
-    time = Time(
-        requests.get(f"{url}/api/main/status").json()["time"]["jday"], format="jd"
-    )
-    properties = requests.get(f"{url}/api/stelproperty/list").json()
+    time = Time(httpx.get(f"{url}/api/main/status").json()["time"]["jday"], format="jd")
+    properties = httpx.get(f"{url}/api/stelproperty/list").json()
     current_camera = properties["MosaicCamera.currentCamera"]["value"]
     ra = Angle(properties["MosaicCamera.ra"]["value"] * u.deg)
     dec = Angle(properties["MosaicCamera.dec"]["value"] * u.deg)
@@ -393,7 +387,7 @@ def slew(ctx, lon, lat, rot, time, timeformat, camera, horizon, no_follow):
 
     if time is not None:
         t = Time(time, format=timeformat)
-        requests.post(
+        httpx.post(
             f"{api_url}/api/main/time",
             data={"time": t.mjd + 2400000.5},
         )
@@ -429,9 +423,7 @@ def slew(ctx, lon, lat, rot, time, timeformat, camera, horizon, no_follow):
 
     slew_to(api_url, camera, ra, dec, rsp)
     if not no_follow:
-        requests.post(
-            f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"}
-        )
+        httpx.post(f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"})
 
     print_state(api_url)
 
@@ -512,7 +504,7 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
 
     if time is not None:
         t = Time(time, format=timeformat)
-        requests.post(
+        httpx.post(
             f"{api_url}/api/main/time",
             data={"time": t.mjd + 2400000.5},
         )
@@ -543,9 +535,7 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
 
     slew_to(api_url, "LSSTCam" if camera == "ComCam" else camera, ra, dec, rsp)
     if not no_follow:
-        requests.post(
-            f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"}
-        )
+        httpx.post(f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"})
     print_state(api_url)
 
 
@@ -639,13 +629,17 @@ def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow):
         Angle(data["sky_rotation"] * u.deg),
     )
     # Set visit time and pause with timerate=0
-    requests.post(
+    httpx.post(
         f"{api_url}/api/main/time",
-        data={"time": data["exp_midpt_mjd"] + 2400000.5, "timerate": 0},
+        data={
+            "time": data["exp_midpt_mjd"] + 2400000.5,
+            "timerate": 0,
+        },
     )
     if not no_follow:
-        requests.post(
-            f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"}
+        httpx.post(
+            f"{api_url}/api/stelaction/do",
+            data={"id": "actionSetViewToCamera"},
         )
     print_state(api_url)
 
@@ -735,9 +729,12 @@ def replay(
     visit0 = visits[
         np.logical_or(visits["img_type"] == "OBJECT", visits["img_type"] == "ACQ")
     ][0]
-    requests.post(
+    httpx.post(
         f"{api_url}/api/main/time",
-        data={"time": visit0["exp_midpt_mjd"] + 2400000.5, "timerate": 100 / 86400},
+        data={
+            "time": visit0["exp_midpt_mjd"] + 2400000.5,
+            "timerate": 100 / 86400,
+        },
     )
 
     currentindex = None
@@ -775,8 +772,9 @@ def replay(
             Angle(visit["sky_rotation"] * u.deg),
         )
         if not no_follow:
-            requests.post(
-                f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"}
+            httpx.post(
+                f"{api_url}/api/stelaction/do",
+                data={"id": "actionSetViewToCamera"},
             )
 
 
@@ -875,8 +873,9 @@ def follow(ctx, camera, efd_client, delay, no_follow):
 
         slew_to(api_url, "LSSTCam" if camera == "ComCam" else camera, ra, dec, rsp)
         if not no_follow:
-            requests.post(
-                f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"}
+            httpx.post(
+                f"{api_url}/api/stelaction/do",
+                data={"id": "actionSetViewToCamera"},
             )
         sleep(delay)
 
