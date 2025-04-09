@@ -562,8 +562,8 @@ def visit(ctx, visit, camera, consdb_token, consdb_server, database, no_follow):
 @click.option(
     "--camera",
     type=click.Choice(CAMERA_CHOICES, case_sensitive=True),
-    help="Specify camera to replay. [default: LSSTCam]",
-    default="LSSTCam",
+    help="Specify camera to replay. [default: LSSTCam or inferred from date]",
+    default=None,
 )
 @click.option(
     "--consdb-token",
@@ -609,6 +609,26 @@ def replay(
 
     api_url = ctx.obj["URL"]
 
+    if day_obs_end is None:
+        day_obs_end = day_obs_begin
+    if day_obs_end < day_obs_begin:
+        raise ValueError("DAY_OBS_END must be greater than or equal to DAY_OBS_BEGIN")
+
+    # Try to infer the camera
+    if camera is None:
+        if day_obs_end < 20241023:
+            print("Inferring camera is LATISS")
+            camera = "LATISS"
+        elif day_obs_end < 20241212 and day_obs_begin > 20241023:
+            print("Inferring camera is ComCam")
+            camera = "ComCam"
+        elif day_obs_end < 20250415 and day_obs_begin > 20241212:
+            print("Inferring camera is LATISS")
+            camera = "LATISS"
+        else:
+            print("Inferring camera is LSSTCam")
+            camera = "LSSTCam"
+
     path = Path(consdb_token).expanduser()
     with open(path, "r") as f:
         token = f.read()
@@ -622,9 +642,6 @@ def replay(
             database = "cdb_lsstcam"
         elif camera == "LATISS":
             database = "cdb_latiss"
-
-    if day_obs_end is None:
-        day_obs_end = day_obs_begin
 
     visits = consdb.query(
         f"select * from {database}.visit1 where day_obs >= {day_obs_begin}"
