@@ -217,6 +217,21 @@ def cli(ctx, url):
 @click.argument("lat", type=str)
 @click.argument("rot", required=False, type=str)
 @click.option(
+    "--time",
+    type=str,
+    default=None,
+    help="Explicitly set time in stellarium to this.  Accepts any format that"
+    " astropy.time.Time can parse together with the --timeformat option."
+    " [default: None]",
+)
+@click.option(
+    "--timeformat",
+    type=str,
+    default=None,
+    help="Time format to use.  Passed as the format argument to astropy.time.Time when"
+    " explicitly setting the time.",
+)
+@click.option(
     "--camera",
     type=click.Choice(CAMERA_CHOICES, case_sensitive=True),
     help="Specify camera to slew. [default: LSSTCam]",
@@ -234,7 +249,7 @@ def cli(ctx, url):
     help="Do not follow the slew with a Stellarium view change.",
 )
 @click.pass_context
-def slew(ctx, lon, lat, rot, camera, horizon, no_follow):
+def slew(ctx, lon, lat, rot, time, timeformat, camera, horizon, no_follow):
     """Slew mosaic to given position and rotation.
 
     LON is the longitudinal angle (RA or Az).
@@ -258,6 +273,10 @@ def slew(ctx, lon, lat, rot, camera, horizon, no_follow):
         python tvs.py slew "185 deg" "12 deg" "0.5 rad" --camera LATISS
 
         python tvs.py slew 12:34:56.7 -12:34:56.7 45 --no-follow
+
+        python tvs.py slew 0 0 0 --time 2024-04-08T00:00:00
+
+        python tvs.py slew 0 0 0 --time 60408.0 --timeformat mjd
     """
     api_url = ctx.obj["URL"]
     extra_args = ctx.args
@@ -268,6 +287,13 @@ def slew(ctx, lon, lat, rot, camera, horizon, no_follow):
 
     camera = "LSSTCam" if camera == "ComCam" else camera
 
+    if time is not None:
+        t = Time(time, format=timeformat)
+        requests.post(
+            f"{api_url}/api/main/time",
+            data={"time": t.mjd + 2400000.5},
+        )
+
     if horizon:
         # Interpret lon/lat/rot as Az/Alt/RotTelPos
         alt = parse_angle(lat)
@@ -275,11 +301,12 @@ def slew(ctx, lon, lat, rot, camera, horizon, no_follow):
 
         set_camera(api_url, camera)
         data = get_stellarium_attributes(api_url)
-        time = data["time"]
         coord = SkyCoord(
-            alt=alt, az=az, frame=AltAz(obstime=time, location=RUBIN_OBSERVATORY)
+            alt=alt,
+            az=az,
+            frame=AltAz(obstime=data["time"], location=RUBIN_OBSERVATORY),
         )
-        q = parallactic_angle(coord, time)
+        q = parallactic_angle(coord, data["time"])
         ra = coord.icrs.ra
         dec = coord.icrs.dec
         if rot is None:  # Keep current rtp
@@ -309,6 +336,21 @@ def slew(ctx, lon, lat, rot, camera, horizon, no_follow):
 @click.argument("name", type=str)
 @click.argument("rot", type=str, required=False)
 @click.option(
+    "--time",
+    type=str,
+    default=None,
+    help="Explicitly set time in stellarium to this.  Accepts any format that"
+    " astropy.time.Time can parse together with the --timeformat option."
+    " [default: None]",
+)
+@click.option(
+    "--timeformat",
+    type=str,
+    default=None,
+    help="Time format to use.  Passed as the format argument to astropy.time.Time when"
+    " explicitly setting the time.  [default: None]",
+)
+@click.option(
     "--camera",
     type=click.Choice(CAMERA_CHOICES, case_sensitive=True),
     help="Specify camera to slew. [default: LSSTCam]",
@@ -325,7 +367,7 @@ def slew(ctx, lon, lat, rot, camera, horizon, no_follow):
     help="Do not follow the slew with a Stellarium view change.",
 )
 @click.pass_context
-def target(ctx, name, rot, camera, horizon, no_follow):
+def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
     """Slew to target by name.
 
     NAME is the name of the target (e.g., 'M20' or 'Trifid Nebula').
@@ -351,6 +393,10 @@ def target(ctx, name, rot, camera, horizon, no_follow):
         python tvs.py target "Trifid Nebula" 45deg --camera LATISS
 
         python tvs.py target M20 45 --no-follow
+
+        python tvs.py target M20 --time 2024-04-08T00:00:00
+
+        python tvs.py target M20 --time 60408.0 --timeformat mjd
     """
     from astroquery.simbad import Simbad
 
@@ -359,6 +405,13 @@ def target(ctx, name, rot, camera, horizon, no_follow):
     if extra_args:
         name = extra_args[0] if len(extra_args) > 0 else name
         rot = extra_args[1] if len(extra_args) > 1 else rot
+
+    if time is not None:
+        t = Time(time, format=timeformat)
+        requests.post(
+            f"{api_url}/api/main/time",
+            data={"time": t.mjd + 2400000.5},
+        )
 
     simbad = Simbad()
     simbad.add_votable_fields("ra", "dec")
