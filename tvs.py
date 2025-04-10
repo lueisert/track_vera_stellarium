@@ -123,6 +123,64 @@ class ConsDB:
             return table
 
 
+class EFD:
+    """Class to query EFD.
+
+    Uses lsst.efd.client.EFDClient if available, otherwise falls back to
+    using the REST API.
+
+    Parameters
+    ----------
+    server : str
+        EFD server URL.
+    """
+
+    def __init__(self, server):
+        if "usdf" in server:
+            site = "usdf_efd"
+        else:
+            site = "summit_efd"
+        try:
+            from lsst_efd_client import EfdClient
+
+            self.client = EfdClient(site)
+        except ImportError:
+            self.client = None
+            creds_service = f"https://roundtable.lsst.codes/segwarides/creds/{site}"
+            efd_creds = requests.get(creds_service).json()
+            self.auth = efd_creds["username"], efd_creds["password"]
+            self.url = f"https://{efd_creds['host']}{efd_creds['path']}query"
+
+    def get_most_recent_row_before(self, topic, time):
+        if self.client is not None:
+            from lsst.summit.utils.efdUtils import getMostRecentRowWithDataBefore
+
+            return getMostRecentRowWithDataBefore(
+                self.client, topic, timeToLookBefore=time, maxSearchNMinutes=5
+            )
+        else:
+            import pandas as pd
+
+            # Stealing from summit_utils and rubin_nights
+            earliest = Time("2019-01-01")
+            if time < earliest:
+                raise ValueError(f"Time {time} is before EFD start time.")
+            earliest = max(earliest, time - 5 * u.min)
+            query = f'select * from "{topic}" '
+            query += f"where time > '{earliest.isot}Z' and time <= '{time.isot}Z'"
+            params = {"db": "efd", "q": query}
+            response = requests.get(self.url, auth=self.auth, params=params).json()
+            statement = response["results"][0]
+            if "series" not in statement:
+                raise ValueError(f"No data found for topic {topic} at time {time}.")
+            series = statement["series"][0]
+            result = pd.DataFrame(series.get("values", []), columns=series["columns"])
+            if "time" in result:
+                result = result.set_index(pd.to_datetime(result["time"]))
+                result = result.drop("time", axis=1)
+            return result.iloc[-1]
+
+
 def parallactic_angle(coord, time):
     """Calculate the parallactic angle.
 
@@ -786,12 +844,12 @@ def replay(
             )
 
 
-def query_mount_status(efd_client, topic, time):
-    """Query the mount status from the EFD.
+def query_efd_retry(efd, topic, time):
+    """Query/poll EFD until a valid row is found.
 
     Parameters
     ----------
-    efd_client : lsst_efd_client.EfdClient
+    efd : EFD
         EFD client.
     topic : str
         Topic to query.
@@ -804,20 +862,16 @@ def query_mount_status(efd_client, topic, time):
         Mount status.
     """
 
-    from lsst.summit.utils.efdUtils import getMostRecentRowWithDataBefore
-
     while True:
         try:
-            mount = getMostRecentRowWithDataBefore(
-                efd_client, topic, timeToLookBefore=time, maxSearchNMinutes=5
-            )
+            out = efd.get_most_recent_row_before(topic, time)
         except (TypeError, ValueError):
             sleep(1.0)
-            print("Waiting for mount status...")
+            print("Waiting for efd...")
             continue
         else:
             break
-    return mount
+    return out
 
 
 @cli.command()
@@ -828,10 +882,10 @@ def query_mount_status(efd_client, topic, time):
     metavar="CAMERA",
 )
 @click.option(
-    "--efd-client",
+    "--rsp-server",
     type=str,
-    help=f"EFD client name. [default: {DEFAULT_EFD_CLIENT}]",
-    default=DEFAULT_EFD_CLIENT,
+    help=f"RSP server URL. [default: {DEFAULT_RSP_SERVER}]",
+    default=DEFAULT_RSP_SERVER,
 )
 @click.option(
     "--delay",
@@ -845,7 +899,7 @@ def query_mount_status(efd_client, topic, time):
     help="Do not follow the replay with a Stellarium view change.",
 )
 @click.pass_context
-def follow(ctx, camera, efd_client, delay, no_follow):
+def follow(ctx, camera, rsp_server, delay, no_follow):
     """Follow camera pointing in real time with Stellarium.
 
     CAMERA is the camera to follow (LSSTCam, ComCam, or LATISS).
@@ -853,11 +907,9 @@ def follow(ctx, camera, efd_client, delay, no_follow):
     To follow both LSSTCam and LATISS, run this command twice with different cameras and
     most likely with --no-follow on one of them.
     """
-    from lsst_efd_client import EfdClient
-
     api_url = ctx.obj["URL"]
 
-    efd_client = EfdClient(efd_client)
+    efd = EFD(rsp_server)
 
     if camera in ["ComCam", "LSSTCam"]:
         topic = "lsst.sal.MTPtg.mountStatus"
@@ -868,16 +920,14 @@ def follow(ctx, camera, efd_client, delay, no_follow):
 
     while True:
         tnow = Time.now()
-        mount_status = query_mount_status(efd_client, topic, tnow)
-        ra = mount_status["mountRA"] * 15
-        dec = mount_status["mountDec"]
-        rtp = mount_status["mountRot"] * u.deg
+        mount_status = query_efd_retry(efd, topic, tnow)
+        ra = Angle(mount_status["mountRA"] * 15 * u.deg)
+        dec = Angle(mount_status["mountDec"] * u.deg)
+        rtp = Angle(mount_status["mountRot"] * u.deg)
         tefd = Time(mount_status["timestamp"], format="unix")
-        coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+        coord = SkyCoord(ra=ra, dec=dec)
         q = parallactic_angle(coord, tefd)
         rsp = q - rtp - 90 * u.deg
-
-        print(f"RA: {ra}, Dec: {dec}, Rot: {rtp}, RSP: {rsp}")
 
         slew_to(api_url, "LSSTCam" if camera == "ComCam" else camera, ra, dec, rsp)
         if not no_follow:
@@ -885,6 +935,7 @@ def follow(ctx, camera, efd_client, delay, no_follow):
                 f"{api_url}/api/stelaction/do",
                 data={"id": "actionSetViewToCamera"},
             )
+        print_state(api_url)
         sleep(delay)
 
 
