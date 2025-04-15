@@ -141,8 +141,8 @@ class EFD:
         else:
             site = "summit_efd"
         try:
-            from lsst_efd_client import EfdClient
             from lsst.summit.utils.efdUtils import getMostRecentRowWithDataBefore
+            from lsst_efd_client import EfdClient
 
             self.client = EfdClient(site)
         except ImportError:
@@ -344,16 +344,16 @@ def print_state(api_url):
     print(f"Camera: {data['current_camera']}")
     print(f"Time: {data['time'].iso} UTC")
     print(
-        f"parallactic angle:                                 {data["q"].deg:8.3f} deg"
+        f"parallactic angle:                                 {data['q'].deg:8.3f} deg"
     )
     az_str = data["az"].to_string(**to_string_kwargs)
     alt_str = data["alt"].to_string(**to_string_kwargs)
-    rtp_str = f"{data["rtp"].deg:8.3f} deg"
+    rtp_str = f"{data['rtp'].deg:8.3f} deg"
     print(f"Az/Alt/RotTelPos:   {az_str:>13s}   {alt_str:>12s}   {rtp_str:>11s}")
 
     ra_str = data["ra"].to_string(unit="hour", precision=1, pad=True)
     dec_str = data["dec"].to_string(**to_string_kwargs)
-    rsp_str = f"{data["rsp"].deg:8.3f} deg"
+    rsp_str = f"{data['rsp'].deg:8.3f} deg"
     print(f"RA/Dec/RotSkyPos:   {ra_str:>13s}   {dec_str:>12s}   {rsp_str:>11s}")
 
 
@@ -365,9 +365,7 @@ def set_view_to_camera(api_url):
     api_url : str
         URL of Stellarium API.
     """
-    requests.post(
-        f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"}
-    )
+    requests.post(f"{api_url}/api/stelaction/do", data={"id": "actionSetViewToCamera"})
 
 
 def set_stellarium_time(api_url, time, timerate=None):
@@ -386,10 +384,8 @@ def set_stellarium_time(api_url, time, timerate=None):
     data = {"time": time.mjd + 2400000.5}
     if timerate is not None:
         data["timerate"] = timerate
-    requests.post(
-        f"{api_url}/api/main/time",
-        data=data
-    )
+    requests.post(f"{api_url}/api/main/time", data=data)
+
 
 @click.group()
 @click.option(
