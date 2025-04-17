@@ -170,7 +170,16 @@ class EFD:
             query = f'select * from "{topic}" '
             query += f"where time > '{earliest.isot}Z' and time <= '{time.isot}Z'"
             params = {"db": "efd", "q": query}
-            response = requests.get(self.url, auth=self.auth, params=params).json()
+            while True:
+                try:
+                    response = requests.get(self.url, auth=self.auth, params=params).json()
+                except:
+                    print("Waiting for EFD...")
+                    sleep(1.0)
+                    continue
+                else:
+                    break
+
             statement = response["results"][0]
             if "series" not in statement:
                 raise ValueError(f"No data found for topic {topic} at time {time}.")
@@ -571,7 +580,6 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
 
         python tvs.py target Trifid_Nebula 45 --horizon
 
-
         python tvs.py target M20 20deg
 
         python tvs.py target M20 "20 deg"
@@ -762,7 +770,6 @@ def replay(
 
     DAY_OBS_BEGIN and DAY_OBS_END form a range of days (inclusive) to replay.  If
     DAY_OBS_END is omitted, it is set equal to DAY_OBS_BEGIN.
-
     """
     api_url = ctx.obj["URL"]
 
@@ -927,6 +934,7 @@ def follow(ctx, camera, rsp_server, delay, no_follow):
 
     while True:
         tnow = Time.now()
+        set_stellarium_time(api_url, tnow, timerate=1 / 86400)
         mount_status = query_efd_retry(efd, topic, tnow)
         ra = Angle(mount_status["mountRA"] * 15 * u.deg)
         dec = Angle(mount_status["mountDec"] * u.deg)
@@ -939,6 +947,7 @@ def follow(ctx, camera, rsp_server, delay, no_follow):
         slew_to(api_url, "LSSTCam" if camera == "ComCam" else camera, ra, dec, rsp)
         if not no_follow:
             set_view_to_camera(api_url)
+        print()
         print_state(api_url)
         sleep(delay)
 
