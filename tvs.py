@@ -317,15 +317,17 @@ def get_stellarium_attributes(url):
     )
     properties = requests.get(f"{url}/api/stelproperty/list").json()
     current_camera = properties["MosaicCamera.currentCamera"]["value"]
-    ra = Angle(properties["MosaicCamera.ra"]["value"] * u.deg)
+    ra = Angle(properties["MosaicCamera.ra"]["value"] * u.deg).wrap_at("360d")
     dec = Angle(properties["MosaicCamera.dec"]["value"] * u.deg)
     rsp = Angle(properties["MosaicCamera.rotation"]["value"], unit=u.deg) - 90 * u.deg
+    rsp = rsp.wrap_at("360d")
     coord = SkyCoord(ra=ra, dec=dec)
     aa = coord.transform_to(AltAz(obstime=time, location=RUBIN_OBSERVATORY))
     alt = aa.alt
-    az = aa.az
-    q = parallactic_angle(coord, time)
+    az = aa.az.wrap_at("360d")
+    q = parallactic_angle(coord, time).wrap_at("360d")
     rtp = q - rsp - 90 * u.deg
+    rtp = rtp.wrap_at("360d")
     return dict(
         time=time,
         current_camera=current_camera,
