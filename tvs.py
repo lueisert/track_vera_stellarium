@@ -697,8 +697,14 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
     is_flag=True,
     help="Do not follow the slew with a Stellarium view change.",
 )
+@click.option(
+    "--rot-offset",
+    type=float,
+    help="Offset to apply to the RotSkyPos (E of N) angle.",
+    default=None,
+)
 @click.pass_context
-def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow):
+def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow, rot_offset):
     """Slew to match given visit ID.
 
     VISIT is the visit ID to slew to.
@@ -754,12 +760,16 @@ def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow):
 
     data = consdb.query(f"select * from {database}.visit1 where visit_id = {visit}")[0]
 
+    if rot_offset is None:
+        if visit > 2025041500000:
+            rot_offset = "-90d"
+    rot = parse_angle(data["sky_rotation"]) + parse_angle(rot_offset)
     slew_to(
         api_url,
         "LSSTCam" if camera == "ComCam" else camera,
         Angle(data["s_ra"] * u.deg),
         Angle(data["s_dec"] * u.deg),
-        Angle(data["sky_rotation"] * u.deg),
+        rot
     )
     # Set visit time and pause with timerate=0
     set_stellarium_time(api_url, Time(data["exp_midpt_mjd"], format="mjd"), timerate=0)
