@@ -10,6 +10,13 @@ from astropy.coordinates import ICRS, AltAz, Angle, EarthLocation, SkyCoord
 from astropy.table import Table
 from astropy.time import Time
 
+try:
+    from colorama import init
+    init(autoreset=True)
+    HAS_COLORAMA = True
+except ImportError:
+    HAS_COLORAMA = False
+
 DEFAULT_STELLARIUM_URL = "http://localhost:8090"
 CAMERA_CHOICES = ["LSSTCam", "ComCam", "LATISS"]
 DEFAULT_RSP_SERVER = "https://usdf-rsp.slac.stanford.edu"
@@ -341,6 +348,34 @@ def get_stellarium_attributes(url):
     )
 
 
+def cprint(text, color=None):
+    if HAS_COLORAMA:
+        from colorama import Fore, Style
+
+        # All color names
+        colors = [
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "magenta",
+            "cyan",
+            "white"
+        ]
+
+        # Generate the color dictionary programmatically
+        color_dict = {color: getattr(Fore, color.upper()) for color in colors}
+        color_dict.update({f"bright_{color}": getattr(Fore, f"LIGHT{color.upper()}_EX") for color in colors})
+
+        # Get the color code from the dictionary
+        color_code = color_dict.get(color.lower(), "") if color else ""
+        print(f"{color_code}{text}{Style.RESET_ALL}")
+
+    else:
+        print(text)
+
+
 def print_state(api_url):
     data = get_stellarium_attributes(api_url)
 
@@ -353,19 +388,20 @@ def print_state(api_url):
     )
 
     print(f"Camera: {data['current_camera']}")
-    print(f"Time: {data['time'].iso} UTC")
-    print(
-        f"parallactic angle:                                 {data['q'].deg:8.3f} deg"
+    cprint(f"Time: {data['time'].iso} UTC", color="bright_yellow")
+    cprint(
+        f"parallactic angle:                                 {data['q'].deg:8.3f} deg",
+        color="bright_magenta",
     )
     az_str = data["az"].to_string(**to_string_kwargs)
     alt_str = data["alt"].to_string(**to_string_kwargs)
     rtp_str = f"{data['rtp'].deg:8.3f} deg"
-    print(f"Az/Alt/RotTelPos:   {az_str:>13s}   {alt_str:>12s}   {rtp_str:>11s}")
+    cprint(f"Az/Alt/RotTelPos:   {az_str:>13s}   {alt_str:>12s}   {rtp_str:>11s}", color="bright_green")
 
     ra_str = data["ra"].to_string(unit="hour", precision=1, pad=True)
     dec_str = data["dec"].to_string(**to_string_kwargs)
     rsp_str = f"{data['rsp'].deg:8.3f} deg"
-    print(f"RA/Dec/RotSkyPos:   {ra_str:>13s}   {dec_str:>12s}   {rsp_str:>11s}")
+    cprint(f"RA/Dec/RotSkyPos:   {ra_str:>13s}   {dec_str:>12s}   {rsp_str:>11s}", color="bright_cyan")
 
 
 def set_view_to_camera(api_url):
