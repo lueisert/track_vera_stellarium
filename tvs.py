@@ -255,6 +255,13 @@ def slew_to(url, camera, ra, dec, rsp):
     rsp : Angle
         Rotator sky position (E of N).
     """
+    if not np.isfinite(ra):
+        cprint(f"ra is not finite: {ra}", "bright_red")
+    if not np.isfinite(dec):
+        cprint(f"dec is not finite: {dec}", "bright_red")
+    if not np.isfinite(rsp):
+        cprint(f"rsp is not finite: {rsp}", "bright_red")
+
     url = f"{url}/api/stelproperty/set"
     for data in [
         {"id": "MosaicCamera.currentCamera", "value": camera},
