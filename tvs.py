@@ -261,7 +261,7 @@ def slew_to(url, camera, ra, dec, rsp):
         {"id": "MosaicCamera.visible", "value": "True"},
         {"id": "MosaicCamera.ra", "value": ra.deg},
         {"id": "MosaicCamera.dec", "value": dec.deg},
-        {"id": "MosaicCamera.rotation", "value": 90 + rsp.deg},
+        {"id": "MosaicCamera.rotation", "value": rsp.deg},
     ]:
         requests.post(url, data=data)
 
@@ -323,18 +323,29 @@ def get_stellarium_attributes(url):
         requests.get(f"{url}/api/main/status").json()["time"]["jday"], format="jd"
     )
     properties = requests.get(f"{url}/api/stelproperty/list").json()
+    ra = properties["MosaicCamera.ra"]["value"]
+    dec = properties["MosaicCamera.dec"]["value"]
+    rsp = properties["MosaicCamera.rotation"]["value"]
     current_camera = properties["MosaicCamera.currentCamera"]["value"]
-    ra = Angle(properties["MosaicCamera.ra"]["value"] * u.deg).wrap_at("360d")
-    dec = Angle(properties["MosaicCamera.dec"]["value"] * u.deg)
-    rsp = Angle(properties["MosaicCamera.rotation"]["value"], unit=u.deg) - 90 * u.deg
-    rsp = rsp.wrap_at("360d")
+    while any(x is None for x in [ra, dec, rsp, current_camera]):
+        print("Waiting for Stellarium...")
+        sleep(0.5)
+        properties = requests.get(f"{url}/api/stelproperty/list").json()
+        ra = properties["MosaicCamera.ra"]["value"]
+        dec = properties["MosaicCamera.dec"]["value"]
+        rsp = properties["MosaicCamera.rotation"]["value"]
+        current_camera = properties["MosaicCamera.currentCamera"]["value"]
+
+    ra = Angle(ra * u.deg).wrap_at("360d")
+    dec = Angle(dec * u.deg)
+    rsp = Angle(rsp, unit=u.deg).wrap_at("360d")
     coord = SkyCoord(ra=ra, dec=dec)
     aa = coord.transform_to(AltAz(obstime=time, location=RUBIN_OBSERVATORY))
     alt = aa.alt
-    az = aa.az.wrap_at("360d")
+    az = aa.az.wrap_at("180d")
     q = parallactic_angle(coord, time).wrap_at("360d")
     rtp = q - rsp - 90 * u.deg
-    rtp = rtp.wrap_at("360d")
+    rtp = rtp.wrap_at("90d")  # Should always be between -90 and +90 degrees
     return dict(
         time=time,
         current_camera=current_camera,
@@ -388,20 +399,22 @@ def print_state(api_url):
     )
 
     print(f"Camera: {data['current_camera']}")
-    cprint(f"Time: {data['time'].iso} UTC", color="bright_yellow")
+    cprint(f"Time: {data['time'].iso} UTC", "yellow")
     cprint(
         f"parallactic angle:                                 {data['q'].deg:8.3f} deg",
-        color="bright_magenta",
+        "bright_magenta",
     )
     az_str = data["az"].to_string(**to_string_kwargs)
     alt_str = data["alt"].to_string(**to_string_kwargs)
     rtp_str = f"{data['rtp'].deg:8.3f} deg"
-    cprint(f"Az/Alt/RotTelPos:   {az_str:>13s}   {alt_str:>12s}   {rtp_str:>11s}", color="bright_green")
+    cprint(f"Az/Alt/RotTelPos:   {az_str:>13s}   {alt_str:>12s}   {rtp_str:>11s}", "bright_green")
 
     ra_str = data["ra"].to_string(unit="hour", precision=1, pad=True)
     dec_str = data["dec"].to_string(**to_string_kwargs)
     rsp_str = f"{data['rsp'].deg:8.3f} deg"
-    cprint(f"RA/Dec/RotSkyPos:   {ra_str:>13s}   {dec_str:>12s}   {rsp_str:>11s}", color="bright_cyan")
+    cprint(f"RA/Dec/RotSkyPos:   {ra_str:>13s}   {dec_str:>12s}   {rsp_str:>11s}", "bright_cyan")
+    rot_speed = Angle("360d") / u.day * np.cos(RUBIN_OBSERVATORY.lat) * np.cos(data['az']) / np.cos(data['alt'])
+    cprint(f"Rotator speed: {rot_speed.to(u.deg/u.s):>10.5f}", "bright_red")
 
 
 def set_view_to_camera(api_url):
@@ -1008,6 +1021,51 @@ def status(ctx, camera):
     api_url = ctx.obj["URL"]
     set_camera(api_url, camera)
     print_state(api_url)
+
+
+@cli.command()
+@click.option(
+    "--rsp-server",
+    type=str,
+    help=f"RSP server URL. [default: {DEFAULT_RSP_SERVER}]",
+    default=DEFAULT_RSP_SERVER,
+)
+@click.option(
+    "--delay",
+    type=float,
+    help="Delay between updates in seconds. [default: 5.0]",
+    default=5.0,
+)
+@click.pass_context
+def dome(ctx, rsp_server, delay):
+    """Follow the dome in Stellarium."""
+    api_url = ctx.obj["URL"]
+
+    efd = EFD(DEFAULT_RSP_SERVER)
+
+    topic = "lsst.sal.MTDome.azimuth"
+    while True:
+        tnow = Time.now()
+        dome_az = query_efd_retry(efd, topic, tnow)
+        az = Angle(dome_az["positionActual"] * u.deg)
+        tefd = Time(dome_az["timestamp"], format="unix")
+        alt = Angle("50d")
+        rtp = Angle("0d")
+        coord = SkyCoord(alt=alt, az=az, frame=AltAz(obstime=tnow, location=RUBIN_OBSERVATORY))
+        ra = coord.icrs.ra
+        dec = coord.icrs.dec
+        q = parallactic_angle(coord, tnow)
+        rsp = q - rtp
+
+        set_camera(api_url, "Dome")
+        slew_to(api_url, "Dome", ra, dec, rsp)
+        print(f"Time: {tnow.iso}")
+        print(f"TEFD: {tefd.iso}")
+        print(f"q: {q.deg:.2f} deg")
+        print(f"Dome azimuth: {az.deg:.2f} deg")
+        print()
+
+        sleep(delay)
 
 
 if __name__ == "__main__":
