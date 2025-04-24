@@ -27,9 +27,11 @@ The Mosaic Camera plugin is also controllable over an http connection, which is 
 
 Note that for these functions to work optimally, you should set your Stellarium location to Cerro Pachón (Use F6).
 
-Requirements are `click` and `astropy` for everything.  You'll need `astroquery` to slew to a target by name.  If you have the LSST Science Pipelines `summit_utils` package available, that'll be used to access the Rubin Consolidated Database (but I've added a rudimentary fallback if this is unavailable.)  Similarly, if `lsst_efd_client` is available, that'll be used to access the Rubin Engineering Facilities Database, but a rudimentary fallback also exists.
+All functions require `click` and `astropy`.  Additionally, you'll need `astroquery` to slew to a target by name.  If you have the LSST Science Pipelines `summit_utils` package available, that'll be used to access the Rubin Consolidated Database (but I've added a rudimentary fallback if this is unavailable.)  Similarly, if `lsst_efd_client` is available, that'll be used to access the Rubin Engineering Facilities Database, but a rudimentary fallback also exists.
 
 There's no installation.  The script is self-contained.  You can either call it with python a la `python tvs.py ...` or add your own [shebang](https://en.wikipedia.org/wiki/Shebang_(Unix)) to the beginning and just use `tvs.py ...`.
+
+For the http control to work, you must enable the Remote Control Stellarium plugin, and configure it with "Server enabled".  You may want to check the "Enable automatically on startup" button too.
 
 
 Commands

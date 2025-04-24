@@ -781,8 +781,11 @@ def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow, rot_offset):
     data = consdb.query(f"select * from {database}.visit1 where visit_id = {visit}")[0]
 
     if rot_offset is None:
-        if visit > 2025041500000:
+        if visit > 2025041500000 and visit < 2025042200000:
             rot_offset = "-90d"
+        else:
+            rot_offset = "0d"
+
     rot = parse_angle(data["sky_rotation"]) + parse_angle(rot_offset)
     slew_to(
         api_url,
