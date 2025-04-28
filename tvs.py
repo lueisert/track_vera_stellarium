@@ -12,6 +12,7 @@ from astropy.time import Time
 
 try:
     from colorama import init
+
     init(autoreset=True)
     HAS_COLORAMA = True
 except ImportError:
@@ -99,7 +100,6 @@ class ConsDB:
             self.client = ConsDbClient(server)
         except ImportError:
             self.client = None
-        self.client = None
 
     def query(self, query):
         """Query ConsDB.
@@ -179,7 +179,9 @@ class EFD:
             params = {"db": "efd", "q": query}
             while True:
                 try:
-                    response = requests.get(self.url, auth=self.auth, params=params).json()
+                    response = requests.get(
+                        self.url, auth=self.auth, params=params
+                    ).json()
                 except:
                     print("Waiting for EFD...")
                     sleep(1.0)
@@ -371,20 +373,16 @@ def cprint(text, color=None):
         from colorama import Fore, Style
 
         # All color names
-        colors = [
-            "black",
-            "red",
-            "green",
-            "yellow",
-            "blue",
-            "magenta",
-            "cyan",
-            "white"
-        ]
+        colors = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
 
         # Generate the color dictionary programmatically
         color_dict = {color: getattr(Fore, color.upper()) for color in colors}
-        color_dict.update({f"bright_{color}": getattr(Fore, f"LIGHT{color.upper()}_EX") for color in colors})
+        color_dict.update(
+            {
+                f"bright_{color}": getattr(Fore, f"LIGHT{color.upper()}_EX")
+                for color in colors
+            }
+        )
 
         # Get the color code from the dictionary
         color_code = color_dict.get(color.lower(), "") if color else ""
@@ -414,13 +412,25 @@ def print_state(api_url):
     az_str = data["az"].to_string(**to_string_kwargs)
     alt_str = data["alt"].to_string(**to_string_kwargs)
     rtp_str = f"{data['rtp'].deg:8.3f} deg"
-    cprint(f"Az/Alt/RotTelPos:   {az_str:>13s}   {alt_str:>12s}   {rtp_str:>11s}", "bright_green")
+    cprint(
+        f"Az/Alt/RotTelPos:   {az_str:>13s}   {alt_str:>12s}   {rtp_str:>11s}",
+        "bright_green",
+    )
 
     ra_str = data["ra"].to_string(unit="hour", precision=1, pad=True)
     dec_str = data["dec"].to_string(**to_string_kwargs)
     rsp_str = f"{data['rsp'].deg:8.3f} deg"
-    cprint(f"RA/Dec/RotSkyPos:   {ra_str:>13s}   {dec_str:>12s}   {rsp_str:>11s}", "bright_cyan")
-    rot_speed = Angle("360d") / u.day * np.cos(RUBIN_OBSERVATORY.lat) * np.cos(data['az']) / np.cos(data['alt'])
+    cprint(
+        f"RA/Dec/RotSkyPos:   {ra_str:>13s}   {dec_str:>12s}   {rsp_str:>11s}",
+        "bright_cyan",
+    )
+    rot_speed = (
+        Angle("360d")
+        / u.day
+        * np.cos(RUBIN_OBSERVATORY.lat)
+        * np.cos(data["az"])
+        / np.cos(data["alt"])
+    )
     cprint(f"Rotator speed: {rot_speed.to(u.deg/u.s):>10.5f}", "bright_red")
 
 
@@ -792,7 +802,7 @@ def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow, rot_offset):
         "LSSTCam" if camera == "ComCam" else camera,
         Angle(data["s_ra"] * u.deg),
         Angle(data["s_dec"] * u.deg),
-        rot
+        rot,
     )
     # Set visit time and pause with timerate=0
     set_stellarium_time(api_url, Time(data["exp_midpt_mjd"], format="mjd"), timerate=0)
@@ -1007,10 +1017,15 @@ def follow(ctx, camera, rsp_server, delay, no_follow):
         tnow = Time.now()
         set_stellarium_time(api_url, tnow, timerate=1 / 86400)
         mount_status = query_efd_retry(efd, topic, tnow)
-        ra = Angle(mount_status["mountRA"] * 15 * u.deg)
-        dec = Angle(mount_status["mountDec"] * u.deg)
-        rtp = Angle(mount_status["mountRot"] * u.deg)
-        tefd = Time(mount_status["timestamp"], format="unix")
+        try:
+            ra = Angle(mount_status["mountRA"] * 15 * u.deg)
+            dec = Angle(mount_status["mountDec"] * u.deg)
+            rtp = Angle(mount_status["mountRot"] * u.deg)
+            tefd = Time(mount_status["timestamp"], format="unix")
+        except ValueError:
+            print("Waiting for EFD...")
+            sleep(delay)
+            continue
         coord = SkyCoord(ra=ra, dec=dec)
         q = parallactic_angle(coord, tefd)
         rsp = q - rtp - 90 * u.deg
@@ -1061,7 +1076,9 @@ def dome(ctx, rsp_server, delay):
         tefd = Time(dome_az["timestamp"], format="unix")
         alt = Angle("50d")
         rtp = Angle("0d")
-        coord = SkyCoord(alt=alt, az=az, frame=AltAz(obstime=tnow, location=RUBIN_OBSERVATORY))
+        coord = SkyCoord(
+            alt=alt, az=az, frame=AltAz(obstime=tnow, location=RUBIN_OBSERVATORY)
+        )
         ra = coord.icrs.ra
         dec = coord.icrs.dec
         q = parallactic_angle(coord, tnow)
