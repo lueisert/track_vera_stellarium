@@ -7,7 +7,7 @@ import click
 import numpy as np
 import requests
 from astropy.coordinates import ICRS, AltAz, Angle, EarthLocation, SkyCoord
-from astropy.table import Table
+from astropy.table import QTable, Table
 from astropy.time import Time
 
 try:
@@ -716,6 +716,11 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
     default=None,
 )
 @click.option(
+    "--force_consdb",
+    is_flag=True,
+    help="Force use of ConsDB for coordinates.",
+)
+@click.option(
     "--rsp-token",
     type=str,
     help=f"Path to RSP token file. [default: {DEFAULT_RSP_TOKEN_PATH}]",
@@ -739,7 +744,9 @@ def target(ctx, name, rot, time, timeformat, camera, horizon, no_follow):
     default=None,
 )
 @click.pass_context
-def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow, rot_offset):
+def visit(
+    ctx, visit, camera, force_consdb, rsp_token, rsp_server, no_follow, rot_offset
+):
     """Slew to match given visit ID.
 
     VISIT is the visit ID to slew to.
@@ -793,24 +800,46 @@ def visit(ctx, visit, camera, rsp_token, rsp_server, no_follow, rot_offset):
     else:
         raise ValueError(f"Unknown camera: {camera}")
 
-    data = consdb.query(f"select * from {database}.visit1 where visit_id = {visit}")[0]
-
     if rot_offset is None:
         if visit > 2025041500000 and visit < 2025042200000:
-            rot_offset = "-90d"
+            rot_offset = Angle("-90d")
         else:
-            rot_offset = "0d"
+            rot_offset = Angle("0d")
+    rot_offset = parse_angle(rot_offset, unit=u.deg)
 
-    rot = parse_angle(data["sky_rotation"]) + parse_angle(rot_offset)
+    ra = None
+    if not force_consdb:
+        try:
+            table = QTable.read("visits.ecsv")
+        except FileNotFoundError:
+            print("visits.ecsv not found.  Using ConsDB for coordinates.")
+        else:
+            if visit in table["visit"]:
+                print("Using visits.ecsv for coordinates")
+                row = table[table["visit"] == visit][0]
+                ra = row["ra"]
+                dec = row["dec"]
+                rsp = row["rsp"]
+                time = row["time"]
+    if ra is None:
+        print("Using ConsDB for coordinates")
+        query = f"select * from {database}.visit1 where visit_id = {visit}"
+        data = consdb.query(query)[0]
+        ra = Angle(data["s_ra"] * u.deg)
+        dec = Angle(data["s_dec"] * u.deg)
+        rsp = Angle(data["sky_rotation"] * u.deg)
+        time = Time(data["exp_midpt_mjd"], format="mjd", scale="tai")
+
+    rsp = rsp + rot_offset
     slew_to(
         api_url,
         "LSSTCam" if camera == "ComCam" else camera,
-        Angle(data["s_ra"] * u.deg),
-        Angle(data["s_dec"] * u.deg),
-        rot,
+        ra,
+        dec,
+        rsp,
     )
     # Set visit time and pause with timerate=0
-    set_stellarium_time(api_url, Time(data["exp_midpt_mjd"], format="mjd"), timerate=0)
+    set_stellarium_time(api_url, time, timerate=0)
     if not no_follow:
         set_view_to_camera(api_url)
     print_state(api_url)
