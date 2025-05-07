@@ -161,11 +161,16 @@ class EFD:
 
     def get_most_recent_row_before(self, topic, time):
         if self.client is not None:
+            from aiohttp.client_exceptions import ServerDisconnectedError
             from lsst.summit.utils.efdUtils import getMostRecentRowWithDataBefore
 
-            return getMostRecentRowWithDataBefore(
-                self.client, topic, timeToLookBefore=time, maxSearchNMinutes=5
-            )
+            try:
+                out = getMostRecentRowWithDataBefore(
+                    self.client, topic, timeToLookBefore=time, maxSearchNMinutes=5
+                )
+            except ServerDisconnectedError:
+                raise ValueError()
+            return out
         else:
             import pandas as pd
 
@@ -182,7 +187,7 @@ class EFD:
                     response = requests.get(
                         self.url, auth=self.auth, params=params
                     ).json()
-                except:
+                except ValueError:
                     print("Waiting for EFD...")
                     sleep(1.0)
                     continue
