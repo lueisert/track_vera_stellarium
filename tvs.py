@@ -10,6 +10,8 @@ from astropy.coordinates import ICRS, AltAz, Angle, EarthLocation, SkyCoord
 from astropy.table import QTable, Table
 from astropy.time import Time
 
+import socket, struct
+
 try:
     from colorama import init
 
@@ -19,7 +21,7 @@ except ImportError:
     HAS_COLORAMA = False
 
 DEFAULT_STELLARIUM_URL = "http://localhost:8090"
-CAMERA_CHOICES = ["LSSTCam", "ComCam", "LATISS"]
+CAMERA_CHOICES = ["LSSTCam", "ComCam", "LATISS", "DIMM"]
 DEFAULT_RSP_SERVER = "https://usdf-rsp.slac.stanford.edu"
 DEFAULT_RSP_TOKEN_PATH = "~/.lsst/rsp_token"
 DEFAULT_EFD_CLIENT = "usdf_efd"
@@ -231,7 +233,7 @@ def parallactic_angle(coord, time):
     return Angle(np.arctan2(sinq, cosq))
 
 
-def set_camera(url, camera):
+def set_camera(url, camera, visible=True):
     """Set the camera in Stellarium.
 
     Parameters
@@ -240,11 +242,12 @@ def set_camera(url, camera):
         URL of Stellarium API.
     camera : str
         Camera to set.
+    visible : boolean
+        Visibility of the Camera Mosaic. Default: True
     """
     url = f"{url}/api/stelproperty/set"
     requests.post(url, data={"id": "MosaicCamera.currentCamera", "value": camera})
-    requests.post(url, data={"id": "MosaicCamera.visible", "value": "True"})
-
+    requests.post(url, data={"id": "MosaicCamera.visible", "value": visible})
 
 def slew_to(url, camera, ra, dec, rsp):
     """Send camera repositioning command to Stellarium.
@@ -571,6 +574,7 @@ def slew(ctx, lon, lat, rot, time, timeformat, camera, horizon, no_follow):
 
         set_camera(api_url, camera)
         data = get_stellarium_attributes(api_url)
+        
         coord = SkyCoord(
             alt=alt,
             az=az,
@@ -991,16 +995,19 @@ def query_efd_retry(efd, topic, time):
         Mount status.
     """
 
-    while True:
+    NUM_RETRY = 10
+
+    for i in range(NUM_RETRY):
+
         try:
             out = efd.get_most_recent_row_before(topic, time)
+            return out
         except (TypeError, ValueError):
             sleep(1.0)
-            print("Waiting for efd...")
-            continue
-        else:
-            break
-    return out
+    
+    return None
+
+    
 
 
 @cli.command()
@@ -1044,33 +1051,141 @@ def follow(ctx, camera, rsp_server, delay, no_follow):
         topic = "lsst.sal.MTPtg.mountStatus"
     elif camera == "LATISS":
         topic = "lsst.sal.ATPtg.mountStatus"
+    elif camera == "DIMM":
+        topic = "lsst.sal.DIMM.status"
     else:
         raise ValueError(f"Unknown camera: {camera}")
+    
+    camera_displayed = {"LSSTCam" : "LSSTCam",
+                        "ComCam" : "LSSTCam",
+                        "LATISS" : "LATISS",
+                        "DIMM" : "LATISS"}
 
     while True:
         tnow = Time.now()
         set_stellarium_time(api_url, tnow, timerate=1 / 86400)
         mount_status = query_efd_retry(efd, topic, tnow)
         try:
-            ra = Angle(mount_status["mountRA"] * 15 * u.deg)
-            dec = Angle(mount_status["mountDec"] * u.deg)
-            rtp = Angle(mount_status["mountRot"] * u.deg)
-            tefd = Time(mount_status["timestamp"], format="unix")
-        except ValueError:
-            print("Waiting for EFD...")
-            sleep(delay)
+            if camera != "DIMM":
+                ra = Angle(mount_status["mountRA"] * 15 * u.deg)
+                dec = Angle(mount_status["mountDec"] * u.deg)
+                rtp = Angle(mount_status["mountRot"] * u.deg)
+                tefd = Time(mount_status["timestamp"], format="unix")
+            else:
+                ra = Angle(mount_status["ra"] * 15 * u.deg)
+                dec = Angle(mount_status["decl"] * u.deg)
+                rtp = Angle(0.0 * u.deg)
+                tefd = Time(mount_status["private_efdStamp"], format="unix")
+        except (ValueError, TypeError):
+            print("No Data from EFD. Waiting 1 min...")
+            set_camera(api_url, camera_displayed[camera], visible=False)
+            sleep(60)
+            efd = EFD(rsp_server)
             continue
+
         coord = SkyCoord(ra=ra, dec=dec)
         q = parallactic_angle(coord, tefd)
         rsp = q - rtp - 90 * u.deg
 
-        slew_to(api_url, "LSSTCam" if camera == "ComCam" else camera, ra, dec, rsp)
+        slew_to(api_url, camera_displayed[camera], ra, dec, rsp)
+
         if not no_follow:
             set_view_to_camera(api_url)
+
         print()
         print_state(api_url)
         sleep(delay)
 
+
+@cli.command()
+@click.argument(
+    "camera",
+    type=click.Choice(CAMERA_CHOICES, case_sensitive=True),
+    default="LSSTCam",
+    metavar="CAMERA",
+)
+@click.option(
+    "--rsp-server",
+    type=str,
+    help=f"RSP server URL. [default: {DEFAULT_RSP_SERVER}]",
+    default=DEFAULT_RSP_SERVER,
+)
+@click.option(
+    "--delay",
+    type=float,
+    help="Delay between updates in seconds. [default: 5.0]",
+    default=5.0,
+)
+@click.option(
+    "--port",
+    type=int,
+    help="Port used to communicate with Stellarium. [default: 10001]",
+    default=10001,
+)
+@click.pass_context
+def followtc(ctx, camera, rsp_server, delay, port):
+    """Follow camera pointing in real time with Stellarium.
+
+    CAMERA is the camera to follow (LSSTCam, ComCam, LATISS or DIMM).
+
+    This is using the telescope controll plugin. 
+    1. Create a Telescope in Stellarium with port x
+    2. Start this script with port=x
+    3. Connect to the telescope in the Stellarium Telescope Control Window
+    """
+
+    api_url = ctx.obj["URL"]
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("", port))
+        s.listen()
+        conn, addr = s.accept()
+        with conn:
+            print(f"Connected by {addr}")
+
+            efd = EFD(rsp_server)
+
+            if camera in ["ComCam", "LSSTCam"]:
+                topic = "lsst.sal.MTPtg.mountStatus"
+            elif camera == "LATISS":
+                topic = "lsst.sal.ATPtg.mountStatus"
+            elif camera == "DIMM":
+                topic = "lsst.sal.DIMM.status"
+            else:
+                raise ValueError(f"Unknown camera: {camera}")
+
+            while True:
+
+                tnow = Time.now()
+                set_stellarium_time(api_url, tnow, timerate=1 / 86400)
+                mount_status = query_efd_retry(efd, topic, tnow)
+                try:
+                    if camera != "DIMM":
+                        ra = Angle(mount_status["mountRA"] * 15 * u.deg)
+                        dec = Angle(mount_status["mountDec"] * u.deg)
+                    else:
+                        ra = Angle(mount_status["ra"] * 15 * u.deg)
+                        dec = Angle(mount_status["decl"] * u.deg)
+                except (ValueError, TypeError):
+                    print("No Data from EFD. Waiting 1 min...")
+                    #Putting pointer at the Northpole while there is no data
+                    reply = struct.pack("3iIii", 24, 0, int(0), int(0x80000000), int(0x40000000), 0)
+                    conn.send(reply)
+                    sleep(60.0)
+                    efd = EFD(rsp_server)
+                    continue
+
+                #Prepare correct format
+                ra_binary = (ra.hour / 12.) * 0x80000000
+                dec_binary = (dec.value / 90.) * 0x40000000
+
+                reply = struct.pack("3iIii", 24, 0, int(0), int(ra_binary), int(dec_binary), 0)
+                conn.send(reply)
+
+                print()
+                print("Ra: " + str(ra) + " Dec: " + str(dec))
+                sleep(delay)
 
 @cli.command()
 @click.argument("camera", type=str, required=False, default="LSSTCam")
